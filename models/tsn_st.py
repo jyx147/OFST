@@ -1,7 +1,7 @@
 import torch
 from torch import nn
 from models.mg_memAE_ofd import MG_MemAE_OFD
-from models.mae_tensor import mae_vitnew
+from models.mae_fly import mae_vitnew
 
 
 class OFST(nn.Module):
