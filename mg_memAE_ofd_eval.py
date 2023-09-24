@@ -143,18 +143,3 @@ def evaluate(config, ckpt_path, testing_chunked_samples_file, suffix):
 
     return auc
 
-
-if __name__ == '__main__':
-
-    model_save_path = "./ckpt/avenue_MG_MemAE_OFD_525/best.pth"
-    cfg_file = "./cfgs/mg_memAE_ofd_cfg.yaml"
-    config = yaml.safe_load(open(cfg_file))
-    dataset_base_dir = config["dataset_base_dir"]
-    dataset_name = config["dataset_name"]
-
-    testing_chunked_samples_file = os.path.join("./data", config["dataset_name"],
-                                                "testing/chunked_samples/chunked_samples_00.pkl")
-
-    with torch.no_grad():
-        auc = evaluate(config, model_save_path, testing_chunked_samples_file, suffix="best")
-        print(auc)

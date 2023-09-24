@@ -173,30 +173,3 @@ def evaluate(config, ckpt_path, testing_chunked_samples_file, training_stats_pat
     return auc
 
 
-if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--model_save_path", type=str,
-                        default="./ckpt/avenue_ML_MemAE_SC_CVAE_tensorfly_723/best.pth",
-                        help='path to pretrained weights')
-    parser.add_argument("--cfg_file", type=str,
-                        default="./cfgs/cfg.yaml",
-                        help='path to pretrained model configs')
-    args = parser.parse_args()
-
-    config = yaml.safe_load(open(args.cfg_file))
-    testing_chunked_samples_file = os.path.join("./data", config["dataset_name"],
-                                                "testing/chunked_samples/chunked_samples_00.pkl")
-
-    from train import cal_training_stats
-
-    os.makedirs(os.path.join("./eval", config["exp_name"]), exist_ok=True)
-    training_chunked_samples_dir = os.path.join("./data", config["dataset_name"], "training/chunked_samples")
-    training_stat_path = os.path.join("./eval", config["exp_name"], "training_stats.npy")
-    cal_training_stats(config, args.model_save_path, training_chunked_samples_dir, training_stat_path)
-
-    with torch.no_grad():
-        auc = evaluate(config, args.model_save_path,
-                       testing_chunked_samples_file,
-                       training_stat_path, suffix="best")
-
-        print(auc)

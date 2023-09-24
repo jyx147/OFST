@@ -113,13 +113,9 @@ def train(config, training_chunked_samples_dir, testing_chunked_samples_file):
 
                 if step % config["logevery"] == config["logevery"] - 1:
                     print("[Step: {}/ Epoch: {}]: Loss: {:.4f} ".format(step + 1, epoch + 1, loss_all))
-
                     writer.add_scalar('loss_total/train', loss_all, global_step=step + 1)
                     writer.add_scalar('loss_frame/train', config["lam_frame"] * loss_frame, global_step=step + 1)
-                    # writer.add_scalar('loss_kl/train', config["lam_kl"] * loss_kl, global_step=step + 1)
                     writer.add_scalar('loss_grad/train', config["lam_grad"] * loss_grad, global_step=step + 1)
-                    # writer.add_scalar('loss_sparsity_vit/train', config["lam_sparsity_vit"] * loss_sparsity_vit, global_step=step + 1)
-
                     num_vis = 6
                     writer.add_figure("img/train_sample_frames",
                                       visualize_sequences(img_batch_tensor2numpy(
