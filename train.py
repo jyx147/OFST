@@ -1,0 +1,254 @@
+import gc
+import os
+import torch
+from torch.utils.data import DataLoader
+from torch import optim
+from tensorboardX import SummaryWriter
+import torch.nn as nn
+import numpy as np
+import yaml
+import shutil
+from eval import evaluate
+from tqdm import tqdm
+
+from losses.loss import Gradient_Loss, Intensity_Loss, aggregate_kl_loss
+from datasets.dataset import Chunked_sample_dataset, img_batch_tensor2numpy
+from models.tsn_st import OFST
+
+from utils.initialization_utils import weights_init_kaiming
+from utils.vis_utils import visualize_sequences
+from utils.model_utils import loader, saver, only_model_saver
+
+
+def train(config, training_chunked_samples_dir, testing_chunked_samples_file):
+    paths = dict(log_dir="%s/%s" % (config["log_root"], config["exp_name"]),
+                 ckpt_dir="%s/%s" % (config["ckpt_root"], config["exp_name"]))
+
+    os.makedirs(paths["ckpt_dir"], exist_ok=True)
+
+    batch_size = config["batchsize"]
+    epochs = config["num_epochs"]
+    num_workers = config["num_workers"]
+    device = config["device"]
+    lr = config["lr"]
+    training_chunk_samples_files = sorted(os.listdir(training_chunked_samples_dir))
+
+    # loss functions
+    grad_loss = Gradient_Loss(config["alpha"],
+                              config["model_paras"]["img_channels"] * config["model_paras"]["clip_pred"],
+                              device).to(device)
+    intensity_loss = Intensity_Loss(l_num=config["intensity_loss_norm"]).to(device)
+
+    model = OFST(num_hist=config["model_paras"]["clip_hist"],
+                  num_pred=config["model_paras"]["clip_pred"],
+                  config=config,
+                  features_root=config["model_paras"]["feature_root"],
+                  num_slots=config["model_paras"]["num_slots"],
+                  shrink_thres=config["model_paras"]["shrink_thres"],
+                  mem_usage=config["model_paras"]["mem_usage"],
+                  skip_ops=config["model_paras"]["skip_ops"],
+                  drop_rate=config["model_paras"]["drop_rate"],
+                  ).to(device)
+
+    # load MG_MemAE_OFD weights and fix them
+    MG_MemAE_OFD_state_dict = torch.load(config["MG_MemAE_OFD_pretrained"])["model_state_dict"]
+    model.memAE.load_state_dict(MG_MemAE_OFD_state_dict)
+
+    for param in model.memAE.parameters():
+        param.requires_grad = False
+    model.memAE.eval()
+
+    optimizer = optim.Adam(model.mae_new.parameters(), lr=lr, eps=1e-7, weight_decay=0.0)
+    scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=50, gamma=0.8)
+
+    step = 0
+    epoch_last = 0
+    if not config["pretrained"]:
+        #model.mae_new.apply(weights_init_kaiming)
+        model.mae_new.initialize_weights()
+    else:
+        assert (config["pretrained"] is not None)
+        model_state_dict, optimizer_state_dict, step = loader(config["pretrained"])
+        model.load_state_dict(model_state_dict)
+        optimizer.load_state_dict(optimizer_state_dict)
+
+    writer = SummaryWriter(paths["log_dir"])
+    shutil.copyfile("./cfgs/cfg.yaml", os.path.join(config["log_root"], config["exp_name"], "cfg.yaml"))
+
+    best_auc = -1
+    for epoch in range(epoch_last, epochs + epoch_last):
+        for chunk_file_idx, chunk_file in enumerate(training_chunk_samples_files):
+            dataset = Chunked_sample_dataset(os.path.join(training_chunked_samples_dir, chunk_file))
+            dataloader = DataLoader(dataset=dataset, batch_size=batch_size, num_workers=num_workers, shuffle=True)
+            for idx, train_data in tqdm(enumerate(dataloader),
+                                        desc="Training Epoch %d, Chunked File %d" % (epoch + 1, chunk_file_idx),
+                                        total=len(dataloader)):
+                model.mae_new.train()
+
+                sample_frames, sample_ofs, _, _, _ = train_data
+                sample_ofs = sample_ofs.to(device)
+                sample_frames = sample_frames.to(device)
+
+                out = model(sample_frames, sample_ofs, mode="train")
+
+                # loss_kl = aggregate_kl_loss(out["q_means"], out["p_means"])
+                # loss_kl=out["klloss"]
+                loss_frame = intensity_loss(out["frame_pred"], out["frame_target"])
+                loss_grad = grad_loss(out["frame_pred"], out["frame_target"])
+                # print("att",out["att_weightvit"])
+                # loss_sparsity_vit = torch.mean(torch.sum(-out["att_weightvit"] * torch.log(out["att_weightvit"] + 1e-12), dim=1))
+
+
+                # print("vit",loss_sparsity_vit)
+                # lam_frame_learn =torch.nn.parameter(torch.FloatTensor(1),requires_grad=True)
+                loss_all = config["lam_frame"] * loss_frame + \
+                           config["lam_grad"] * loss_grad
+                           # config["lam_sparsity_vit"] * loss_sparsity_vit
+                           # config["lam_kl"] * loss_kl
+
+
+                optimizer.zero_grad()
+                loss_all.backward()
+                optimizer.step()
+
+                if step % config["logevery"] == config["logevery"] - 1:
+                    print("[Step: {}/ Epoch: {}]: Loss: {:.4f} ".format(step + 1, epoch + 1, loss_all))
+
+                    writer.add_scalar('loss_total/train', loss_all, global_step=step + 1)
+                    writer.add_scalar('loss_frame/train', config["lam_frame"] * loss_frame, global_step=step + 1)
+                    # writer.add_scalar('loss_kl/train', config["lam_kl"] * loss_kl, global_step=step + 1)
+                    writer.add_scalar('loss_grad/train', config["lam_grad"] * loss_grad, global_step=step + 1)
+                    # writer.add_scalar('loss_sparsity_vit/train', config["lam_sparsity_vit"] * loss_sparsity_vit, global_step=step + 1)
+
+                    num_vis = 6
+                    writer.add_figure("img/train_sample_frames",
+                                      visualize_sequences(img_batch_tensor2numpy(
+                                          sample_frames.cpu()[:num_vis, :, :, :]),
+                                          seq_len=sample_frames.size(1) // 3,
+                                          return_fig=True),
+                                      global_step=step + 1)
+                    writer.add_figure("img/train_frame_recon",
+                                      visualize_sequences(img_batch_tensor2numpy(
+                                          out["frame_pred"].detach().cpu()[:num_vis, :, :, :]),
+                                          seq_len=config["model_paras"]["clip_pred"],
+                                          return_fig=True),
+                                      global_step=step + 1)
+
+                    writer.add_figure("img/train_of_target",
+                                      visualize_sequences(img_batch_tensor2numpy(
+                                          sample_ofs.cpu()[:num_vis, :, :, :]),
+                                          seq_len=sample_ofs.size(1) // 2,
+                                          return_fig=True),
+                                      global_step=step + 1)
+                    writer.add_figure("img/train_of_recon",
+                                      visualize_sequences(img_batch_tensor2numpy(
+                                          out["of_recon"].detach().cpu()[:num_vis, :, :, :]),
+                                          seq_len=sample_ofs.size(1) // 2,
+                                          return_fig=True),
+                                      global_step=step + 1)
+
+                    writer.add_scalar('learning_rate', scheduler.get_last_lr()[0], global_step=step + 1)
+
+                step += 1
+            del dataset
+
+        scheduler.step()
+
+        if epoch % config["saveevery"] == config["saveevery"] - 1:
+            model_save_path = os.path.join(paths["ckpt_dir"], config["model_savename"])
+            saver(model.state_dict(), optimizer.state_dict(), model_save_path, epoch + 1, step, max_to_save=20)
+
+            # computer training stats
+            stats_save_path = os.path.join(paths["ckpt_dir"], "training_stats.npy-%d" % (epoch + 1))
+            cal_training_stats(config, model_save_path + "-%d" % (epoch + 1), training_chunked_samples_dir,
+                               stats_save_path)
+
+            with torch.no_grad():
+                auc = evaluate(config, model_save_path + "-%d" % (epoch + 1),
+                               testing_chunked_samples_file,
+                               stats_save_path,
+                               suffix=str(epoch + 1))
+                print(auc)
+                if auc > best_auc:
+                    best_auc = auc
+                    only_model_saver(model.state_dict(), os.path.join(paths["ckpt_dir"], "best.pth"))
+                    print(best_auc)
+
+                writer.add_scalar("auc", auc, global_step=epoch + 1)
+
+    print("================ Best AUC %.4f ================" % best_auc)
+
+
+def cal_training_stats(config, ckpt_path, training_chunked_samples_dir, stats_save_path):
+    device = config["device"]
+    model = OFST(num_hist=config["model_paras"]["clip_hist"],
+                  num_pred=config["model_paras"]["clip_pred"],
+                  config=config,
+                  features_root=config["model_paras"]["feature_root"],
+                  num_slots=config["model_paras"]["num_slots"],
+                  shrink_thres=config["model_paras"]["shrink_thres"],
+                  skip_ops=config["model_paras"]["skip_ops"],
+                  mem_usage=config["model_paras"]["mem_usage"],
+                  drop_rate=config["model_paras"]["drop_rate"],
+                  ).to(config["device"]).eval()
+
+    # load weights
+    model_weights = torch.load(ckpt_path)["model_state_dict"]
+    model.load_state_dict(model_weights)
+    # print("load pre-trained success!")
+
+    score_func = nn.MSELoss(reduction="none")
+    training_chunk_samples_files = sorted(os.listdir(training_chunked_samples_dir))
+
+    of_training_stats = []
+    frame_training_stats = []
+
+    print("=========Forward pass for training stats ==========")
+    with torch.no_grad():
+
+        for chunk_file_idx, chunk_file in enumerate(training_chunk_samples_files):
+            dataset = Chunked_sample_dataset(os.path.join(training_chunked_samples_dir, chunk_file))
+            dataloader = DataLoader(dataset=dataset, batch_size=128, num_workers=0, shuffle=False)
+
+            for idx, data in tqdm(enumerate(dataloader),
+                                  desc="Training stats calculating, Chunked File %02d" % chunk_file_idx,
+                                  total=len(dataloader)):
+                sample_frames, sample_ofs, _, _, _ = data
+                sample_frames = sample_frames.to(device)
+                sample_ofs = sample_ofs.to(device)
+
+                out = model(sample_frames, sample_ofs, mode="test")
+
+                loss_frame = score_func(out["frame_pred"], out["frame_target"]).cpu().data.numpy()
+                loss_of = score_func(out["of_recon"], out["of_target"]).cpu().data.numpy()
+
+                of_scores = np.sum(np.sum(np.sum(loss_of, axis=3), axis=2), axis=1)
+                frame_scores = np.sum(np.sum(np.sum(loss_frame, axis=3), axis=2), axis=1)
+
+                of_training_stats.append(of_scores)
+                frame_training_stats.append(frame_scores)
+            del dataset
+            gc.collect()
+
+    print("=========Forward pass for training stats done!==========")
+    of_training_stats = np.concatenate(of_training_stats, axis=0)
+    frame_training_stats = np.concatenate(frame_training_stats, axis=0)
+
+    training_stats = dict(of_training_stats=of_training_stats,
+                          frame_training_stats=frame_training_stats)
+    # save to file
+    torch.save(training_stats, stats_save_path)
+
+import sys
+import os
+
+if __name__ == '__main__':
+    config = yaml.safe_load(open("./cfgs/cfg.yaml"))
+    dataset_name = config["dataset_name"]
+    dataset_base_dir = config["dataset_base_dir"]
+    training_chunked_samples_dir = os.path.join(dataset_base_dir, dataset_name, "training/chunked_samples")
+    testing_chunked_samples_file = os.path.join(dataset_base_dir, dataset_name,
+                                                "testing/chunked_samples/chunked_samples_00.pkl")
+
+    train(config, training_chunked_samples_dir, testing_chunked_samples_file)
+

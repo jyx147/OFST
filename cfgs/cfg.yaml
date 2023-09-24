@@ -1,0 +1,66 @@
+model_paras:
+  final_act: False
+  nf_max: 128
+  nf_start: 64
+  spatial_size: 32
+  dropout_prob: 0.1
+  img_channels: 3
+  motion_channels: 2
+  clip_hist: 4
+  clip_pred: 1
+  num_flows: 4
+  # MG_MemAE_OFD
+  feature_root: 32
+  num_slots: 2000
+  shrink_thres: 0.0005
+  mem_usage: [ False, True, True, True ]
+  skip_ops: [ "none", "concat", "concat" ]
+  drop_rate: 0.5
+
+device: cuda:0
+dataset_base_dir: ./data
+
+dataset_name: ped1
+exp_name: ped1_MG_MemAE_OFD_ST_tensorfly_728
+ckpt_root: ./ckpt
+log_root: ./log
+eval_root: ./eval
+
+
+MG_MemAE_OFD_pretrained: ./ckpt/ped1_MG_MemAE_OFD/best.pth
+pretrained: False
+
+
+
+model_savename: model.pth
+# num of iterations to log
+logevery: 100
+
+# num of epoch to save models
+saveevery: 1
+
+# training setting
+num_epochs: 80
+batchsize: 128
+lr: 0.0008
+num_workers: 0
+# alpha for gradient loss
+alpha: 1
+# use L1 or L2 recon loss
+intensity_loss_norm: 2
+# lambda for frame intensity loss
+lam_frame: 1.0
+# lambda for kl loss
+lam_kl: 2.0
+# lambda for gradient loss
+lam_grad: 1.0
+
+lam_sparsity_vit: 0.0002
+
+w_r: 1.0
+w_p: 0.1
+
+
+
+
+

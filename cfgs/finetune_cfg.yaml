@@ -1,0 +1,66 @@
+model_paras:
+  final_act: False
+  nf_max: 128
+  nf_start: 64
+  spatial_size: 32
+  dropout_prob: 0.1
+  img_channels: 3
+  motion_channels: 2
+  clip_hist: 4
+  clip_pred: 1
+  num_flows: 4
+  finetune: True
+  # ML-MemAE-SC
+  feature_root: 32
+  num_slots: 2000
+  shrink_thres: 0.0005
+  mem_usage: [ False, True, True, True ]
+  skip_ops: [ "none", "concat", "concat" ]
+  drop_rate: 0.4
+
+device: cuda:0
+dataset_base_dir: ./data
+
+dataset_name: ped1
+exp_name: ped1_MG_MemAE_OFD_ST_finetune
+ckpt_root: ./ckpt
+log_root: ./log
+eval_root: ./eval
+
+ML_MemAE_SC_pretrained: False
+
+pretrained: ./ckpt/ped1_MG_MemAE_OFD_ST/best.pth
+
+model_savename: model.pth
+
+# num of iterations to log
+logevery: 1000
+
+# num of epoch to save models
+saveevery: 1
+
+# training setting
+num_epochs: 80
+batchsize: 128
+lr: 0.0008 #0.00008
+num_workers: 0
+# alpha for gradient loss
+alpha: 1
+# use L1 or L2 recon loss
+intensity_loss_norm: 2
+# lambda for frame intensity loss
+lam_frame: 1.0
+# lambda for kl loss
+lam_kl: 1.0
+# lambda for gradient loss
+lam_grad: 1.0
+# lambda for memory sparsity loss
+lam_sparse: 0.0002
+# lambda for flow recon. loss
+lam_recon: 1.0
+
+lam_sparsity_vit: 0.0002
+
+
+w_r: 0.5
+w_p: 0.5
